@@ -90,12 +90,17 @@ func TestGalleryPageUsesExplicitTimestampWindowAndOneRequest(t *testing.T) {
 	require.Equal(t, 2, page.Count)
 	require.True(t, page.HasMore)
 	require.Equal(t, oldest, page.NextBeforeTimestamp)
+	require.True(t, page.ContinuationMaySkipTimestampTies, "distinct visible timestamps cannot prove boundary uniqueness")
+	wire, err := json.Marshal(page)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"continuation_may_skip_timestamp_ties":true`)
 	require.Equal(t, oldest, page.Messages[1].GalleryTS)
 	last, err := client.GalleryPage(t.Context(), "g1", GalleryOptions{Before: page.NextBeforeTimestamp, After: after, Limit: 2})
 	require.NoError(t, err)
 	require.Equal(t, 2, calls, "older media needs a separate explicit call")
 	require.False(t, last.HasMore)
 	require.Empty(t, last.NextBeforeTimestamp)
+	require.False(t, last.ContinuationMaySkipTimestampTies)
 }
 
 func TestGalleryPageRetainsDistinctMessagesWithEqualTimestamps(t *testing.T) {
@@ -125,6 +130,77 @@ func TestGalleryPageRetainsDistinctMessagesWithEqualTimestamps(t *testing.T) {
 	}, page.Messages)
 	require.True(t, page.HasMore)
 	require.Equal(t, timestamp, page.NextBeforeTimestamp, "preserve the native timestamp without fabricated tie breakers")
+	require.True(t, page.ContinuationMaySkipTimestampTies)
+}
+
+func TestGalleryPageSurfacesSyntheticBoundarySplitUncertainty(t *testing.T) {
+	const boundary = "2030-01-02T12:00:00.1234Z"
+	// A timestamp-only provider can split equal-time rows across a full-page
+	// boundary. This fixture demonstrates the limitation, not live behavior.
+	dataset := []Message{
+		{ID: "newer", GroupID: "g1", GalleryTS: "2030-01-03T00:00:00Z"},
+		{ID: "visible-tie", GroupID: "g1", GalleryTS: boundary},
+		{ID: "unseen-tie", GroupID: "g1", GalleryTS: boundary},
+		{ID: "older", GroupID: "g1", GalleryTS: "2030-01-01T00:00:00Z"},
+	}
+	client := New("fixture-token")
+	calls := 0
+	client.httpClient.Transport = featureTransport(func(request *http.Request) (*http.Response, error) {
+		calls++
+		require.Equal(t, http.MethodGet, request.Method)
+		require.Equal(t, "/v3/conversations/g1/gallery", request.URL.Path)
+		messages := dataset[:2]
+		query := url.Values{"acceptFiles": {"1"}, "limit": {"2"}}
+		if calls == 2 {
+			query.Set("before", boundary)
+			messages = dataset[3:]
+		}
+		require.Equal(t, query, request.URL.Query())
+		body, err := json.Marshal(map[string]any{"meta": map[string]int{"code": 200}, "response": map[string]any{"messages": messages}})
+		require.NoError(t, err)
+		return featureResponse(200, string(body)), nil
+	})
+	first, err := client.GalleryPage(t.Context(), "g1", GalleryOptions{Limit: 2})
+	require.NoError(t, err)
+	require.Equal(t, 1, calls)
+	require.Equal(t, dataset[:2], first.Messages)
+	require.Equal(t, boundary, first.NextBeforeTimestamp)
+	require.True(t, first.ContinuationMaySkipTimestampTies)
+	last, err := client.GalleryPage(t.Context(), "g1", GalleryOptions{Limit: 2, Before: first.NextBeforeTimestamp})
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "each explicit call makes exactly one request")
+	require.Equal(t, dataset[3:], last.Messages, "strict timestamp continuation can omit the unseen boundary tie")
+	require.Empty(t, last.NextBeforeTimestamp)
+	require.False(t, last.ContinuationMaySkipTimestampTies)
+}
+
+func TestGalleryPagePartialAndEmptyResultsHaveNoContinuationUncertainty(t *testing.T) {
+	for _, count := range []int{0, 1} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			client := New("fixture-token")
+			calls := 0
+			client.httpClient.Transport = featureTransport(func(*http.Request) (*http.Response, error) {
+				calls++
+				messages := []Message{}
+				if count == 1 {
+					messages = append(messages, Message{ID: "m1", GroupID: "g1", GalleryTS: "2030-01-01T00:00:00Z"})
+				}
+				body, err := json.Marshal(map[string]any{"meta": map[string]int{"code": 200}, "response": map[string]any{"messages": messages}})
+				require.NoError(t, err)
+				return featureResponse(200, string(body)), nil
+			})
+			page, err := client.GalleryPage(t.Context(), "g1", GalleryOptions{Limit: 2})
+			require.NoError(t, err)
+			require.Equal(t, 1, calls)
+			require.Equal(t, count, page.Count)
+			require.False(t, page.HasMore)
+			require.Empty(t, page.NextBeforeTimestamp)
+			require.False(t, page.ContinuationMaySkipTimestampTies)
+			wire, err := json.Marshal(page)
+			require.NoError(t, err)
+			require.NotContains(t, string(wire), "continuation_may_skip_timestamp_ties")
+		})
+	}
 }
 
 func TestGalleryPageDefaultLimitAndConversationRepresentations(t *testing.T) {

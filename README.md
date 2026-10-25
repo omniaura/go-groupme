@@ -37,7 +37,9 @@ these credentials in URLs, logs, issues, or example fixtures.
 Use `NewWithTransport(token, transport)` for a caller-configured
 `http.RoundTripper`, such as a proxy or tracing transport. Each client keeps its
 own HTTP configuration; the SDK still controls fixed service URLs, timeouts,
-response limits, redirect refusal and its no-retry policy.
+response limits, redirect refusal and its mutation retry policy. Reads retain
+the existing go-kit behavior; configured read policies stay separate from
+single-attempt mutations.
 
 Gallery pagination uses timestamps rather than message IDs:
 
@@ -57,6 +59,8 @@ page provides a continuation hint, not a guarantee that another page exists.
 The older `Gallery` method remains a first-page compatibility wrapper.
 Timestamp cursors cannot disambiguate rows with equal `gallery_ts` values, so
 this provider contract does not guarantee exhaustive traversal across ties.
+Full pages expose `ContinuationMaySkipTimestampTies` alongside the native
+timestamp hint so callers can see that uncertainty in the result.
 
 ## API coverage
 

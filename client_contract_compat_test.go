@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omniaura/go-kit/errs"
+	"github.com/omniaura/go-kit/net/hit"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,6 +195,78 @@ func TestNewWithTransportUsesIsolatedAPIAndMediaClients(t *testing.T) {
 	require.Same(t, defaultTransport, NewWithTransport("synthetic-token", nil).httpClient.Transport.(boundedTransport).base)
 }
 
+func TestNewWithTransportPreservesReadRetryPolicy(t *testing.T) {
+	t.Run("default policy remains unset", func(t *testing.T) {
+		calls := 0
+		client := NewWithTransport("synthetic-token", featureTransport(func(*http.Request) (*http.Response, error) {
+			calls++
+			return featureResponse(http.StatusServiceUnavailable, `{"meta":{"code":503}}`), nil
+		}))
+		var doc envelope
+		err := client.api.GET("/users/me").Do(t.Context(), &doc)
+		require.Error(t, err)
+		_, configured := errs.RetryPolicyOf(err)
+		require.False(t, configured, "constructor preserves the pinned go-kit default instead of installing a client-wide override")
+		require.Equal(t, 1, calls, "the pinned default has no automatic retry policy")
+	})
+	for _, failure := range []string{"transport", "status"} {
+		t.Run("configured read policy retries "+failure, func(t *testing.T) {
+			calls := 0
+			client := NewWithTransport("synthetic-token", featureTransport(func(r *http.Request) (*http.Response, error) {
+				require.Equal(t, http.MethodGet, r.Method)
+				calls++
+				if calls == 1 {
+					if failure == "transport" {
+						return nil, errors.New("synthetic transient transport failure")
+					}
+					return featureResponse(http.StatusServiceUnavailable, `{"meta":{"code":503}}`), nil
+				}
+				return featureResponse(200, `{"meta":{"code":200},"response":{"id":"self"}}`), nil
+			}))
+			if failure == "transport" {
+				// Keep the request fallback untouched: a constructor-wide
+				// NeverRetry would mask this transport factory's policy.
+				client.api.Errors(hit.ErrorMap{Transport: errs.NewFactory(http.StatusServiceUnavailable, "synthetic transient read failure", errs.WithRetryPolicy(errs.FixedRetry(2, 0)))})
+			} else {
+				client.api.Retry(errs.FixedRetry(2, 0))
+			}
+			account, err := client.Me(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, "self", account.ID)
+			require.Equal(t, 2, calls)
+		})
+	}
+}
+
+func TestNewWithTransportMutationsOverrideReadRetryPolicy(t *testing.T) {
+	for _, method := range []string{"group", "direct"} {
+		for _, failure := range []string{"transport", "status"} {
+			t.Run(method+" "+failure, func(t *testing.T) {
+				calls := 0
+				client := NewWithTransport("synthetic-token", featureTransport(func(r *http.Request) (*http.Response, error) {
+					require.Equal(t, http.MethodPost, r.Method)
+					calls++
+					if failure == "transport" {
+						return nil, errors.New("synthetic private provider detail")
+					}
+					return featureResponse(http.StatusServiceUnavailable, `{"meta":{"code":503}}`), nil
+				}))
+				client.api.Retry(errs.FixedRetry(3, 0))
+				input := SendInput{SourceGUID: "synthetic-intent", Text: "Synthetic text"}
+				var err error
+				if method == "group" {
+					_, err = client.Send(t.Context(), "group", input)
+				} else {
+					_, err = client.SendDirect(t.Context(), "peer", input)
+				}
+				require.True(t, ErrUncertain.Is(err))
+				require.NotContains(t, err.Error(), "private provider detail")
+				require.Equal(t, 1, calls, "an uncertain mutation must not inherit the read retry policy")
+			})
+		}
+	}
+}
+
 func TestNewWithTransportPreservesSafetyBoundaries(t *testing.T) {
 	t.Run("redirect", func(t *testing.T) {
 		calls := 0
@@ -213,17 +287,6 @@ func TestNewWithTransportPreservesSafetyBoundaries(t *testing.T) {
 		}))
 		_, err := client.Me(t.Context())
 		require.True(t, ErrUnavailable.Is(err))
-	})
-	t.Run("mutation has one attempt", func(t *testing.T) {
-		calls := 0
-		client := NewWithTransport("synthetic-token", featureTransport(func(*http.Request) (*http.Response, error) {
-			calls++
-			return nil, errors.New("synthetic private provider detail")
-		}))
-		_, err := client.Send(t.Context(), "group", SendInput{SourceGUID: "synthetic-intent", Text: "Synthetic text"})
-		require.True(t, ErrUncertain.Is(err))
-		require.NotContains(t, err.Error(), "private provider detail")
-		require.Equal(t, 1, calls)
 	})
 	t.Run("caller cancellation", func(t *testing.T) {
 		client := NewWithTransport("synthetic-token", featureTransport(func(r *http.Request) (*http.Response, error) {

@@ -227,7 +227,7 @@ func newClientWithTransport(base, token string, transport http.RoundTripper) *Cl
 		transport = http.DefaultTransport
 	}
 	h := &http.Client{Timeout: 20 * time.Second, Transport: boundedTransport{transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Client{api: hit.NewClient[envelope](base).Service("groupme").HTTPClient(h).Timeout(20*time.Second).Retry(errs.NeverRetry()).Header("Accept", "application/json"), token: token, baseURL: strings.TrimRight(base, "/"), httpClient: h}
+	return &Client{api: hit.NewClient[envelope](base).Service("groupme").HTTPClient(h).Timeout(20*time.Second).Header("Accept", "application/json"), token: token, baseURL: strings.TrimRight(base, "/"), httpClient: h}
 }
 
 // Replace hit errors instead of wrapping them: provider bodies can echo tokens
@@ -592,7 +592,7 @@ func (c *Client) Send(ctx context.Context, id string, in SendInput) (Message, er
 	body := struct {
 		Message SendInput `json:"message"`
 	}{in}
-	if e := c.api.POST("/groups/"+id+"/messages").Header("X-Access-Token", c.token).Body(&body).Do(ctx, &doc); e != nil {
+	if e := c.api.POST("/groups/"+id+"/messages").Header("X-Access-Token", c.token).Retry(errs.NeverRetry()).Body(&body).Do(ctx, &doc); e != nil {
 		return Message{}, failure(ctx, e, true)
 	}
 	var out struct {

@@ -27,6 +27,10 @@ type GalleryPageResult struct {
 	Count               int       `json:"count"`
 	HasMore             bool      `json:"has_more"`
 	NextBeforeTimestamp string    `json:"next_before_timestamp,omitempty"`
+	// ContinuationMaySkipTimestampTies is true whenever a timestamp-only
+	// continuation is emitted, even without visible ties. Uniqueness is not
+	// guaranteed, so that hint does not promise exhaustive traversal.
+	ContinuationMaySkipTimestampTies bool `json:"continuation_may_skip_timestamp_ties,omitempty"`
 }
 
 // Fractional precision is bounded to nanoseconds so validation cannot silently
@@ -109,6 +113,7 @@ func (c *Client) GalleryPage(ctx context.Context, cid string, options GalleryOpt
 	}
 	if page.HasMore {
 		page.NextBeforeTimestamp = nextBefore
+		page.ContinuationMaySkipTimestampTies = true
 	}
 	return page, nil
 }
