@@ -1,6 +1,12 @@
 package groupme
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"math"
+	"strconv"
+)
 
 // Reaction is the provider's saved reaction projection. UserIDs and Code are
 // provider data; they are never interpreted as paths or HTTP headers.
@@ -10,6 +16,63 @@ type Reaction struct {
 	PackID    *string  `json:"pack_id,omitempty"`
 	PackIndex *string  `json:"pack_index,omitempty"`
 	UserIDs   []string `json:"user_ids,omitempty"`
+}
+
+// UnmarshalJSON accepts both provider representations without changing the
+// public string identifiers or the stricter outgoing ReactionInput contract.
+func (r *Reaction) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	type reactionWire Reaction
+	decoded := reactionWire(*r)
+	wire := struct {
+		*reactionWire
+		PackID    json.RawMessage `json:"pack_id"`
+		PackIndex json.RawMessage `json:"pack_index"`
+	}{reactionWire: &decoded}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.PackID) != 0 {
+		value, err := reactionIdentifier(wire.PackID)
+		if err != nil {
+			return err
+		}
+		decoded.PackID = value
+	}
+	if len(wire.PackIndex) != 0 {
+		value, err := reactionIdentifier(wire.PackIndex)
+		if err != nil {
+			return err
+		}
+		decoded.PackIndex = value
+	}
+	*r = Reaction(decoded)
+	return nil
+}
+
+func reactionIdentifier(raw json.RawMessage) (*string, error) {
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var value string
+	if len(raw) != 0 && raw[0] == '"' {
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, err
+		}
+		return &value, nil
+	}
+	// Literal decimal integers avoid floating-point precision loss. Existing
+	// string values remain untouched, including provider extensions we do not
+	// yet understand; numeric values must fit the uint64 representation.
+	number, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil {
+		return nil, errors.New("GroupMe reaction identifier must be a string or unsigned integer")
+	}
+	value = strconv.FormatUint(number, 10)
+	return &value, nil
 }
 
 // fieldalign:ignore Preserve provider JSON and durable receipt/intent serialization order.
@@ -83,12 +146,71 @@ type PollResult struct {
 }
 
 type EventLocation struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	Address string `json:"address,omitempty"`
+	Lat     string `json:"lat,omitempty"`
+	Lng     string `json:"lng,omitempty"`
+}
+
+// UnmarshalJSON preserves GroupMe's numeric and numeric-string coordinates as
+// strings, matching the event creation wire format without losing precision.
+func (l *EventLocation) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	type locationWire EventLocation
+	decoded := locationWire(*l)
+	decoded.Lat, decoded.Lng = "", ""
+	wire := struct {
+		*locationWire
+		Lat json.RawMessage `json:"lat"`
+		Lng json.RawMessage `json:"lng"`
+	}{locationWire: &decoded}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	var err error
+	if decoded.Lat, err = eventCoordinate(wire.Lat); err != nil {
+		return err
+	}
+	if decoded.Lng, err = eventCoordinate(wire.Lng); err != nil {
+		return err
+	}
+	*l = EventLocation(decoded)
+	return nil
+}
+
+func eventCoordinate(raw json.RawMessage) (string, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", nil
+	}
+	var value string
+	if raw[0] == '"' {
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", err
+		}
+		if value == "" {
+			return "", nil
+		}
+	} else {
+		var number json.Number
+		if err := json.Unmarshal(raw, &number); err != nil {
+			return "", errors.New("GroupMe event coordinate must be a numeric value or string")
+		}
+		value = number.String()
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return "", errors.New("GroupMe event coordinate must be finite")
+	}
+	return value, nil
 }
 
 // fieldalign:ignore Preserve provider JSON and durable receipt/intent serialization order.
 type CalendarEvent struct {
 	Location       *EventLocation    `json:"location,omitempty"`
+	ImageURL       string            `json:"image_url,omitempty"`
 	Name           string            `json:"name"`
 	Description    string            `json:"description"`
 	StartAt        string            `json:"start_at"`

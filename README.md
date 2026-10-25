@@ -10,7 +10,7 @@ features. Unofficial; not affiliated with or endorsed by GroupMe or Microsoft.
 Requires Go 1.27.1 or later, matching the generic-method support used by go-kit.
 
 ```sh
-go get github.com/omniaura/go-groupme@v0.1.0
+go get github.com/omniaura/go-groupme@v0.2.0
 ```
 
 The package name is `groupme`:
@@ -33,6 +33,28 @@ if page.HasMore {
 Obtain your own access token through GroupMe's supported authentication flow.
 Pass it to `New`; the client sends it in a header. Never commit tokens or include
 these credentials in URLs, logs, issues, or example fixtures.
+
+Use `NewWithTransport(token, transport)` for a caller-configured
+`http.RoundTripper`, such as a proxy or tracing transport. Each client keeps its
+own HTTP configuration; the SDK still controls fixed service URLs, timeouts,
+response limits, redirect refusal and its no-retry policy.
+
+Gallery pagination uses timestamps rather than message IDs:
+
+```go
+media, err := client.GalleryPage(ctx, conversationID, groupme.GalleryOptions{
+    Limit: 100,
+    Before: beforeTimestamp, // Empty for the first page.
+})
+if err != nil {
+    return err
+}
+// Only a separate, deliberate call follows media.NextBeforeTimestamp.
+```
+
+`GalleryPage` validates provider timestamps and conversation identity. A full
+page provides a continuation hint, not a guarantee that another page exists.
+The older `Gallery` method remains a first-page compatibility wrapper.
 
 ## API coverage
 
@@ -97,7 +119,9 @@ transports or loopback servers. No GroupMe credentials or live account are neede
 - [OpenGM community docs](https://groupme-js.github.io/GroupMeCommunityDocs/),
   including undocumented endpoint descriptions
 - [Beeper's GroupMe bridge](https://github.com/beeper/groupme)
+- [beeper/groupme-lib](https://github.com/beeper/groupme-lib), the bridge's Go SDK
 - [goddtriffin/groupme](https://github.com/goddtriffin/groupme), another Go client
+- [nhomble/groupme.go](https://github.com/nhomble/groupme.go), another Go client
 
 These are related projects, not dependencies or claims of compatible behavior.
 This library was extracted from Ditto's GroupMe client; their code was not copied.
