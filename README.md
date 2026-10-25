@@ -55,6 +55,8 @@ if err != nil {
 `GalleryPage` validates provider timestamps and conversation identity. A full
 page provides a continuation hint, not a guarantee that another page exists.
 The older `Gallery` method remains a first-page compatibility wrapper.
+Timestamp cursors cannot disambiguate rows with equal `gallery_ts` values, so
+this provider contract does not guarantee exhaustive traversal across ties.
 
 ## API coverage
 

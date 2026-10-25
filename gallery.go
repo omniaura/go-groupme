@@ -20,6 +20,8 @@ type GalleryOptions struct {
 // GalleryPageResult is one explicit gallery response. HasMore means the page
 // was full, not that another page is guaranteed. Pass NextBeforeTimestamp as a
 // new call's Before to request older media. No message-ID cursor is synthesized.
+// Timestamp pagination cannot guarantee exhaustive traversal across equal
+// gallery_ts values: a strict Before boundary may omit unseen rows at that time.
 type GalleryPageResult struct {
 	Messages            []Message `json:"messages"`
 	Count               int       `json:"count"`

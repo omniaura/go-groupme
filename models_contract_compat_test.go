@@ -95,6 +95,42 @@ func TestCompatibilityEventLocationRejectsInvalidCoordinates(t *testing.T) {
 	}
 }
 
+func TestCompatibilityEventLocationReusedDestination(t *testing.T) {
+	const initial = `{"name":"Synthetic place","address":"123 Synthetic Lane","lat":11.25,"lng":-22.5}`
+	for _, test := range []struct {
+		name, raw, expected string
+	}{
+		{"omitted-members", `{"name":"Renamed place"}`, `{"name":"Renamed place","address":"123 Synthetic Lane","lat":"11.25","lng":"-22.5"}`},
+		{"latitude-only", `{"lat":12}`, `{"name":"Synthetic place","address":"123 Synthetic Lane","lat":"12","lng":"-22.5"}`},
+		{"longitude-only", `{"lng":"-23.500"}`, `{"name":"Synthetic place","address":"123 Synthetic Lane","lat":"11.25","lng":"-23.500"}`},
+		{"null-latitude", `{"lat":null}`, `{"name":"Synthetic place","address":"123 Synthetic Lane","lng":"-22.5"}`},
+		{"null-longitude", `{"lng":null}`, `{"name":"Synthetic place","address":"123 Synthetic Lane","lat":"11.25"}`},
+		{"null-coordinates", `{"lat":null,"lng":null}`, `{"name":"Synthetic place","address":"123 Synthetic Lane"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var location EventLocation
+			require.NoError(t, json.Unmarshal([]byte(initial), &location))
+			require.NoError(t, json.Unmarshal([]byte(test.raw), &location))
+			encoded, err := json.Marshal(location)
+			require.NoError(t, err)
+			require.JSONEq(t, test.expected, string(encoded))
+		})
+	}
+	for _, raw := range []string{
+		`{"name":"Renamed place","lat":{}}`,
+		`{"name":"Renamed place","lat":12,"lng":[]}`,
+		`{"name":"Renamed place","lat":null,"lng":true}`,
+	} {
+		t.Run("invalid/"+raw, func(t *testing.T) {
+			var location EventLocation
+			require.NoError(t, json.Unmarshal([]byte(initial), &location))
+			before := location
+			require.Error(t, json.Unmarshal([]byte(raw), &location))
+			require.Equal(t, before, location, "an invalid update must preserve the complete prior object")
+		})
+	}
+}
+
 func TestCompatibilityEventMetadataRoundTrip(t *testing.T) {
 	var event CalendarEvent
 	require.NoError(t, json.Unmarshal([]byte(`{"event_id":"synthetic-event","image_url":"https://i.groupme.com/synthetic-image","location":{"name":"Synthetic place","address":"123 Synthetic Lane","lat":11.25,"lng":-22.5}}`), &event))

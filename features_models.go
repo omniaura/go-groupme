@@ -160,7 +160,6 @@ func (l *EventLocation) UnmarshalJSON(data []byte) error {
 	}
 	type locationWire EventLocation
 	decoded := locationWire(*l)
-	decoded.Lat, decoded.Lng = "", ""
 	wire := struct {
 		*locationWire
 		Lat json.RawMessage `json:"lat"`
@@ -170,11 +169,15 @@ func (l *EventLocation) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var err error
-	if decoded.Lat, err = eventCoordinate(wire.Lat); err != nil {
-		return err
+	if len(wire.Lat) != 0 {
+		if decoded.Lat, err = eventCoordinate(wire.Lat); err != nil {
+			return err
+		}
 	}
-	if decoded.Lng, err = eventCoordinate(wire.Lng); err != nil {
-		return err
+	if len(wire.Lng) != 0 {
+		if decoded.Lng, err = eventCoordinate(wire.Lng); err != nil {
+			return err
+		}
 	}
 	*l = EventLocation(decoded)
 	return nil

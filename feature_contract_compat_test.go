@@ -98,6 +98,35 @@ func TestGalleryPageUsesExplicitTimestampWindowAndOneRequest(t *testing.T) {
 	require.Empty(t, last.NextBeforeTimestamp)
 }
 
+func TestGalleryPageRetainsDistinctMessagesWithEqualTimestamps(t *testing.T) {
+	const timestamp = "2030-01-02T12:00:00.1234Z"
+	client := New("fixture-token")
+	calls := 0
+	client.httpClient.Transport = featureTransport(func(request *http.Request) (*http.Response, error) {
+		calls++
+		require.Equal(t, http.MethodGet, request.Method)
+		require.Equal(t, "/v3/conversations/g1/gallery", request.URL.Path)
+		require.Equal(t, url.Values{"acceptFiles": {"1"}, "limit": {"2"}}, request.URL.Query())
+		messages := []Message{
+			{ID: "m1", GroupID: "g1", GalleryTS: timestamp},
+			{ID: "m2", GroupID: "g1", GalleryTS: timestamp},
+		}
+		body, err := json.Marshal(map[string]any{"meta": map[string]int{"code": 200}, "response": map[string]any{"messages": messages}})
+		require.NoError(t, err)
+		return featureResponse(200, string(body)), nil
+	})
+	page, err := client.GalleryPage(t.Context(), "g1", GalleryOptions{Limit: 2})
+	require.NoError(t, err)
+	require.Equal(t, 1, calls, "timestamp ties must not trigger implicit requests")
+	require.Equal(t, 2, page.Count)
+	require.Equal(t, []Message{
+		{ID: "m1", GroupID: "g1", GalleryTS: timestamp},
+		{ID: "m2", GroupID: "g1", GalleryTS: timestamp},
+	}, page.Messages)
+	require.True(t, page.HasMore)
+	require.Equal(t, timestamp, page.NextBeforeTimestamp, "preserve the native timestamp without fabricated tie breakers")
+}
+
 func TestGalleryPageDefaultLimitAndConversationRepresentations(t *testing.T) {
 	for _, cid := range []string{"g1", "u1+u2"} {
 		for _, identity := range []string{"group_id", "conversation_id", "both"} {
