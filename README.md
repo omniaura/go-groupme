@@ -63,8 +63,8 @@ No browser cookies or browser session extraction are performed by this package.
 ## Delivery and ownership
 
 - Message page calls return one bounded page. The client never imports all chat
-  history in the background. `Search` uses the caller's explicit bounded page
-  budget.
+  history in the background. `Search` requires `pages == 1`; use its returned
+  `NextBeforeID` in a separate explicit call to continue into older history.
 - Mutations are never automatically retried. A network failure may leave an
   uncertain result; inspect canonical state before deciding what to do next.
   A source GUID is not a durable exactly-once guarantee.

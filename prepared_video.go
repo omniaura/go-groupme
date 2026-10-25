@@ -32,8 +32,8 @@ func (p *PreparedVideoUpload) Attachment() Attachment {
 		return Attachment{}
 	}
 	s := p.state
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Public URLs are immutable after preparation. Reader cleanup and the
+	// single-use grant remain locked; reading metadata need not await a PUT.
 	return Attachment{Type: "video", URL: s.target.RenderURL, PreviewURL: s.target.ThumbnailURL}
 }
 

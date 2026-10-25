@@ -284,14 +284,14 @@ func (c *Client) Me(ctx context.Context) (Account, error) {
 	}
 	return a, e
 }
-func pageQuery(page, size int) (map[string]string, error) {
+func pageQuery(ctx context.Context, page, size int) (map[string]string, error) {
 	if page < 1 || page > 10000 || size < 1 || size > 100 {
-		return nil, ErrInvalid.New(context.Background())
+		return nil, ErrInvalid.New(ctx)
 	}
 	return map[string]string{"page": strconv.Itoa(page), "per_page": strconv.Itoa(size)}, nil
 }
 func (c *Client) Groups(ctx context.Context, page, size int) (ListPage[Group], error) {
-	q, e := pageQuery(page, size)
+	q, e := pageQuery(ctx, page, size)
 	if e != nil {
 		return ListPage[Group]{}, e
 	}
@@ -301,7 +301,7 @@ func (c *Client) Groups(ctx context.Context, page, size int) (ListPage[Group], e
 	return ListPage[Group]{Items: items, Page: page, HasMore: len(items) == size}, e
 }
 func (c *Client) Chats(ctx context.Context, page, size int) (ListPage[Chat], error) {
-	q, e := pageQuery(page, size)
+	q, e := pageQuery(ctx, page, size)
 	if e != nil {
 		return ListPage[Chat]{}, e
 	}
@@ -389,6 +389,8 @@ type SearchResult struct {
 	Complete     bool      `json:"complete"`
 }
 
+// Search examines one selected history page. pages must be 1; an older page
+// requires a separate explicit call with the returned NextBeforeID.
 func (c *Client) Search(ctx context.Context, id, before, query string, pages int) (SearchResult, error) {
 	if strings.TrimSpace(query) == "" || len(query) > 256 || pages < 1 || pages > 1 {
 		return SearchResult{}, ErrInvalid.New(ctx)
