@@ -110,6 +110,7 @@ type Message struct {
 	Attachments    []Attachment            `json:"attachments,omitempty"`
 	CreatedAt      int64                   `json:"created_at"`
 	UpdatedAt      int64                   `json:"updated_at,omitempty"`
+	GalleryTS      string                  `json:"gallery_ts,omitempty"`
 	PinnedAt       *int64                  `json:"pinned_at,omitzero"`
 	PinnedBy       string                  `json:"pinned_by,omitempty"`
 	DeletedAt      string                  `json:"deleted_at,omitempty"`
@@ -202,14 +203,30 @@ type boundedBody struct {
 
 func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	v, e := t.base.RoundTrip(r)
-	if e == nil {
+	if e == nil && v != nil && v.Body != nil {
 		v.Body = boundedBody{io.LimitReader(v.Body, 2<<20), v.Body}
 	}
 	return v, e
 }
-func New(token string) *Client { return newClient(BaseURL, token) }
+func New(token string) *Client { return NewWithTransport(token, nil) }
+
+// NewWithTransport creates an independent client using the supplied transport.
+// A nil transport uses http.DefaultTransport. Configure the transport before
+// sharing it, and ensure it supports concurrent requests. Fixed GroupMe URLs,
+// timeout, response limits and redirect refusal remain controlled by the SDK.
+func NewWithTransport(token string, transport http.RoundTripper) *Client {
+	return newClientWithTransport(BaseURL, token, transport)
+}
+
 func newClient(base, token string) *Client {
-	h := &http.Client{Timeout: 20 * time.Second, Transport: boundedTransport{http.DefaultTransport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return newClientWithTransport(base, token, nil)
+}
+
+func newClientWithTransport(base, token string, transport http.RoundTripper) *Client {
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	h := &http.Client{Timeout: 20 * time.Second, Transport: boundedTransport{transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &Client{api: hit.NewClient[envelope](base).Service("groupme").HTTPClient(h).Timeout(20*time.Second).Header("Accept", "application/json"), token: token, baseURL: strings.TrimRight(base, "/"), httpClient: h}
 }
 
@@ -334,15 +351,19 @@ func (c *Client) DirectMessages(ctx context.Context, id, before string, limit in
 		q["before_id"] = before
 	}
 	var body struct {
+		Count    int       `json:"count"`
 		Messages []Message `json:"direct_messages"`
 	}
 	err := c.get(ctx, "/direct_messages", q, &body)
-	page := MessagePage{Messages: body.Messages, HasMore: len(body.Messages) > 0}
-	for _, m := range page.Messages {
-		if !ValidID(m.ID) || (m.UserID != id && m.RecipientID != id && m.SenderID != id) {
-			return MessagePage{}, ErrUnavailable.New(ctx)
-		}
+	if err != nil {
+		return MessagePage{}, err
 	}
+	if !validMessagePage(body.Messages, before, limit, func(m Message) bool {
+		return m.UserID == id || m.RecipientID == id || m.SenderID == id
+	}) {
+		return MessagePage{}, ErrUnavailable.New(ctx)
+	}
+	page := MessagePage{Messages: body.Messages, Count: body.Count, HasMore: len(body.Messages) > 0}
 	if page.HasMore {
 		page.NextBeforeID = page.Messages[len(page.Messages)-1].ID
 	}
@@ -365,18 +386,34 @@ func (c *Client) messages(ctx context.Context, id, key, before string, limit int
 	}
 	p := MessagePage{Messages: []Message{}}
 	e := c.get(ctx, "/groups/"+id+"/messages", q, &p)
-	if e == nil && len(p.Messages) > 0 {
-		for _, m := range p.Messages {
-			if !ValidID(m.ID) || m.GroupID != id {
-				return MessagePage{}, ErrUnavailable.New(ctx)
-			}
-		}
-		p.HasMore = len(p.Messages) == limit
-		if p.HasMore {
-			p.NextBeforeID = p.Messages[len(p.Messages)-1].ID
-		}
+	if e != nil {
+		return MessagePage{}, e
 	}
-	return p, e
+	if !validMessagePage(p.Messages, before, limit, func(m Message) bool { return m.GroupID == id }) {
+		return MessagePage{}, ErrUnavailable.New(ctx)
+	}
+	// These fields describe this SDK page, never provider-supplied cursor hints.
+	p.HasMore, p.NextBeforeID = len(p.Messages) == limit, ""
+	if p.HasMore {
+		p.NextBeforeID = p.Messages[len(p.Messages)-1].ID
+	}
+	return p, nil
+}
+
+// A page must fit its requested window and exclude its exclusive input cursor.
+// IDs are opaque; no numeric or lexical ordering is assumed.
+func validMessagePage(messages []Message, cursor string, limit int, belongs func(Message) bool) bool {
+	if len(messages) > limit {
+		return false
+	}
+	seen := make(map[string]bool, len(messages))
+	for _, message := range messages {
+		if !ValidID(message.ID) || message.ID == cursor || seen[message.ID] || !belongs(message) {
+			return false
+		}
+		seen[message.ID] = true
+	}
+	return true
 }
 
 // Search scans a bounded history window. A partial result is never an assertion
@@ -500,11 +537,11 @@ func CanonicalSendText(in SendInput) string {
 }
 
 func validVideoURL(raw string) bool {
-	return MediaURL(raw) != "" && strings.HasPrefix(raw, "https://m.groupme.com/uploads/") && strings.HasSuffix(raw, ".mp4")
+	return MediaURL(raw) != "" && (strings.HasPrefix(raw, "https://m.groupme.com/uploads/") || strings.HasPrefix(raw, "https://v.groupme.com/")) && strings.HasSuffix(raw, ".mp4")
 }
 
-// Legacy image URLs can be extensionless. Modern uploads share an origin with
-// videos, so require one of the supported image extensions on that origin.
+// Legacy i.groupme.com images can be extensionless. Upload and legacy video
+// origins require an image extension so a video cannot become its own preview.
 func validImageURL(raw string) bool {
 	if MediaURL(raw) == "" {
 		return false
@@ -513,7 +550,7 @@ func validImageURL(raw string) bool {
 		imageURL, err := url.Parse(raw)
 		return err == nil && !strings.HasSuffix(strings.ToLower(imageURL.Path), ".mp4")
 	}
-	if !strings.HasPrefix(raw, "https://m.groupme.com/uploads/") {
+	if !strings.HasPrefix(raw, "https://m.groupme.com/uploads/") && !strings.HasPrefix(raw, "https://v.groupme.com/") {
 		return false
 	}
 	for _, extension := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp"} {
@@ -555,7 +592,7 @@ func (c *Client) Send(ctx context.Context, id string, in SendInput) (Message, er
 	body := struct {
 		Message SendInput `json:"message"`
 	}{in}
-	if e := c.api.POST("/groups/"+id+"/messages").Header("X-Access-Token", c.token).Body(&body).Do(ctx, &doc); e != nil {
+	if e := c.api.POST("/groups/"+id+"/messages").Header("X-Access-Token", c.token).Retry(errs.NeverRetry()).Body(&body).Do(ctx, &doc); e != nil {
 		return Message{}, failure(ctx, e, true)
 	}
 	var out struct {

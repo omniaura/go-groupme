@@ -278,10 +278,19 @@ func (c *Client) SendDirect(ctx context.Context, recipientID string, in SendInpu
 
 type pollWire struct {
 	Data      Poll     `json:"data"`
+	UserVote  string   `json:"user_vote"`
 	UserVotes []string `json:"user_votes"`
 }
 
-func (p pollWire) value() Poll { p.Data.UserVotes = p.UserVotes; return p.Data }
+func (p pollWire) value() Poll {
+	p.Data.UserVotes = p.UserVotes
+	// Older single-choice responses use a scalar. An explicitly supplied array,
+	// including an empty selection, remains authoritative over that scalar.
+	if p.Data.UserVotes == nil && p.UserVote != "" {
+		p.Data.UserVotes = []string{p.UserVote}
+	}
+	return p.Data
+}
 
 func (c *Client) Polls(ctx context.Context, cid string) (PollList, error) {
 	if !ValidConversationID(cid) {
@@ -519,7 +528,8 @@ func (c *Client) Gallery(ctx context.Context, cid string) (MessagePage, error) {
 	}
 	out.Count = len(out.Messages)
 	out.HasMore = len(out.Messages) == 100
-	// The native initial gallery call is verified; an older-page request is not.
+	// This legacy first-page result has no timestamp cursor. GalleryPage exposes
+	// explicit timestamp continuation without overloading NextBeforeID.
 	return out, err
 }
 
