@@ -359,16 +359,48 @@ func (c *Client) VotePoll(ctx context.Context, cid, pid string, votes []string) 
 		}
 		seen[id] = true
 	}
-	if votes == nil {
-		votes = []string{}
+	// The native client uses different mutation routes for single and multi
+	// polls. One selected poll read decides the mode before any write; an
+	// uncertain POST must never be retried through the other route.
+	poll, err := c.Poll(ctx, cid, pid)
+	if err != nil {
+		return Poll{}, err
+	}
+	endpoint := "/poll/" + cid + "/" + pid
+	var body any
+	switch poll.Type {
+	case "single":
+		if len(votes) != 1 {
+			return Poll{}, ErrInvalid.New(ctx)
+		}
+		endpoint += "/" + votes[0]
+	case "multi":
+		if votes == nil {
+			votes = []string{}
+		}
+		body = struct {
+			Votes []string `json:"votes"`
+		}{votes}
+	default:
+		return Poll{}, ErrUnavailable.New(ctx)
+	}
+	for _, id := range votes {
+		found := false
+		for _, option := range poll.Options {
+			if option.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Poll{}, ErrInvalid.New(ctx)
+		}
 	}
 
 	var out struct {
 		Poll pollWire `json:"poll"`
 	}
-	err := c.featureRequest(ctx, featureRequestOptions{Version: 3, Method: http.MethodPost, Endpoint: "/poll/" + cid + "/" + pid, Body: struct {
-		Votes []string `json:"votes"`
-	}{votes}, Result: &out})
+	err = c.featureRequest(ctx, featureRequestOptions{Version: 3, Method: http.MethodPost, Endpoint: endpoint, Body: body, Result: &out})
 	if err == nil && (out.Poll.Data.ID != pid || out.Poll.Data.ConversationID != cid) {
 		err = ErrUncertain.New(ctx)
 	}

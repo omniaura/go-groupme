@@ -62,7 +62,7 @@ func TestFeatureMutationWireContracts(t *testing.T) {
 
 func TestPollActualMetaCodesAndCanonicalWrappers(t *testing.T) {
 	var created, voted bool
-	poll := `{"data":{"id":"p1","conversation_id":"g1","subject":"fixture","options":[{"id":"1","title":"yes","votes":1,"voter_ids":["u1"]}]},"user_votes":["1"]}`
+	poll := `{"data":{"id":"p1","conversation_id":"g1","type":"multi","subject":"fixture","options":[{"id":"1","title":"yes","votes":1,"voter_ids":["u1"]}]},"user_votes":["1"]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/poll/g1" && r.Method == http.MethodGet:
@@ -122,6 +122,10 @@ func TestFeatureMutationsNeverRetryOrExposeProviderData(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			var calls atomic.Int32
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if operation == "vote" && r.Method == http.MethodGet {
+					writeFixture(t, w, `{"meta":{"code":20000},"response":{"poll":{"data":{"id":"p1","conversation_id":"g1","type":"multi","options":[{"id":"1"}]}}}}`)
+					return
+				}
 				calls.Add(1)
 				w.Header().Set("Location", "https://external.invalid/SECRET")
 				w.WriteHeader(503)
