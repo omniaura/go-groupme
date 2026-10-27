@@ -96,6 +96,10 @@ No browser cookies or browser session extraction are performed by this package.
 - Mutations are never automatically retried. A network failure may leave an
   uncertain result; inspect canonical state before deciding what to do next.
   A source GUID is not a durable exactly-once guarantee.
+- Voting first reads the selected poll to choose its native single-choice or
+  multi-choice route. Single-choice votes require one owned option and have no
+  JSON body; multi-choice votes send an explicit selection array, including an
+  empty array to clear it. An uncertain write never falls back to another route.
 - Errors use go-kit `errs` factories, including `ErrAuthentication`,
   `ErrForbidden`, `ErrRejected`, `ErrRateLimited` and `ErrUncertain`. Provider
   bodies and credentials are excluded from returned errors.
